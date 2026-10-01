@@ -14,7 +14,7 @@ from torch.utils.data import DataLoader
 from tqdm import tqdm
 
 from dataset import build_datasets
-from metrics import BCEDiceLoss, BinarySegmentationMetrics
+from metrics import HybridLoss, BinarySegmentationMetrics
 from model import build_model
 from utils import get_device, load_config, save_json, set_seed
 
@@ -71,6 +71,11 @@ def main() -> None:
         type=float,
         help="Override the configured learning rate, including after restoring optimizer state.",
     )
+    parser.add_argument(
+        "--reset-best",
+        action="store_true",
+        help="Reset best_score and stale_epochs when fine-tuning on a new dataset.",
+    )
     args = parser.parse_args()
     config = load_config(args.config)
     set_seed(config["random_seed"])
@@ -89,7 +94,11 @@ def main() -> None:
     print(f"Using device: {device}")
     model = build_model(config).to(device)
     loss_cfg = config.get("loss", {})
-    criterion = BCEDiceLoss(loss_cfg.get("bce_weight", 0.5), loss_cfg.get("dice_weight", 0.5))
+    criterion = HybridLoss(
+        bce_weight=loss_cfg.get("bce_weight", 0.5),
+        dice_weight=loss_cfg.get("dice_weight", 0.5),
+        focal_tversky_weight=loss_cfg.get("focal_tversky_weight", 0.0)
+    )
     optimizer = AdamW(
         model.parameters(),
         lr=config["training"]["learning_rate"],
@@ -118,6 +127,9 @@ def main() -> None:
         start_epoch = int(checkpoint["epoch"]) + 1
         best_score = float(checkpoint.get("best_score", -1.0))
         stale_epochs = int(checkpoint.get("stale_epochs", 0))
+        if args.reset_best:
+            best_score, stale_epochs = -1.0, 0
+            print("Reset best_score and stale_epochs for new-dataset fine-tuning.")
         if log_path.is_file():
             with log_path.open(newline="", encoding="utf-8") as handle:
                 history = [

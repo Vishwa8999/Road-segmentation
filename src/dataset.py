@@ -14,7 +14,7 @@ from typing import Dict, List, Optional, Sequence, Tuple
 import numpy as np
 import torch
 from PIL import Image, ImageEnhance
-from torch.utils.data import Dataset
+from torch.utils.data import Dataset, ConcatDataset
 
 
 @dataclass(frozen=True)
@@ -127,11 +127,13 @@ class PairedAugment:
         vertical_flip: float = 0.5,
         rotation_degrees: float = 20.0,
         brightness_contrast: float = 0.2,
+        hue_saturation: float = 0.0,
     ) -> None:
         self.horizontal_flip = horizontal_flip
         self.vertical_flip = vertical_flip
         self.rotation_degrees = rotation_degrees
         self.brightness_contrast = brightness_contrast
+        self.hue_saturation = hue_saturation
 
     def __call__(self, image: Image.Image, mask: Image.Image) -> Tuple[Image.Image, Image.Image]:
         if random.random() < self.horizontal_flip:
@@ -148,6 +150,9 @@ class PairedAugment:
             low, high = 1.0 - self.brightness_contrast, 1.0 + self.brightness_contrast
             image = ImageEnhance.Brightness(image).enhance(random.uniform(low, high))
             image = ImageEnhance.Contrast(image).enhance(random.uniform(low, high))
+        if self.hue_saturation > 0:
+            low, high = 1.0 - self.hue_saturation, 1.0 + self.hue_saturation
+            image = ImageEnhance.Color(image).enhance(random.uniform(low, high))
         return image, mask
 
 
@@ -207,33 +212,60 @@ class RoadSegmentationDataset(Dataset):
 
 def build_datasets(
     config: dict,
-) -> Tuple[Dict[str, RoadSegmentationDataset], Dict[str, List[SamplePair]]]:
+) -> Tuple[Dict[str, Dataset], Dict[str, dict]]:
     dataset_cfg = config["dataset"]
     output_dir = Path(config["paths"]["output_dir"])
-    pairs = discover_pairs(dataset_cfg["path"])
-    splits = create_or_load_splits(
-        pairs,
-        str(output_dir / "splits.json"),
-        dataset_cfg["split"]["train"],
-        dataset_cfg["split"]["val"],
-        dataset_cfg["split"]["test"],
-        config["random_seed"],
-    )
+    
+    paths = dataset_cfg["path"]
+    if isinstance(paths, str):
+        paths = [paths]
+
     aug_cfg = config.get("augmentation", {})
     train_augment = PairedAugment(
         horizontal_flip=aug_cfg.get("horizontal_flip", 0.5),
         vertical_flip=aug_cfg.get("vertical_flip", 0.5),
         rotation_degrees=aug_cfg.get("rotation_degrees", 20),
         brightness_contrast=aug_cfg.get("brightness_contrast", 0.2),
+        hue_saturation=aug_cfg.get("hue_saturation", 0.2),
     )
-    common = {
-        "dataset_path": dataset_cfg["path"],
-        "image_size": dataset_cfg.get("image_size", 256),
-        "mask_threshold": dataset_cfg.get("mask_threshold", 128),
-    }
+    
+    datasets_lists = {"train": [], "val": [], "test": []}
+    all_splits = {}
+    
+    for path_str in paths:
+        pairs = discover_pairs(path_str)
+        safe_name = Path(path_str).name
+        split_file = str(output_dir / f"splits_{safe_name}.json")
+        
+        splits = create_or_load_splits(
+            pairs,
+            split_file,
+            dataset_cfg["split"]["train"],
+            dataset_cfg["split"]["val"],
+            dataset_cfg["split"]["test"],
+            config["random_seed"],
+        )
+        all_splits[safe_name] = splits
+        
+        common = {
+            "dataset_path": path_str,
+            "image_size": dataset_cfg.get("image_size", 256),
+            "mask_threshold": dataset_cfg.get("mask_threshold", 128),
+        }
+        
+        train_ds = RoadSegmentationDataset(pairs=splits["train"], augment=train_augment, **common)
+        
+        # OVERSAMPLING: If this is the pseudo-labels dataset, multiply it to balance the sizes
+        if "pseudo" in safe_name.lower():
+            datasets_lists["train"].extend([train_ds] * 10)
+        else:
+            datasets_lists["train"].append(train_ds)
+            
+        datasets_lists["val"].append(RoadSegmentationDataset(pairs=splits["val"], **common))
+        datasets_lists["test"].append(RoadSegmentationDataset(pairs=splits["test"], **common))
+
     datasets = {
-        "train": RoadSegmentationDataset(pairs=splits["train"], augment=train_augment, **common),
-        "val": RoadSegmentationDataset(pairs=splits["val"], **common),
-        "test": RoadSegmentationDataset(pairs=splits["test"], **common),
+        k: ConcatDataset(v) if len(v) > 1 else v[0]
+        for k, v in datasets_lists.items()
     }
-    return datasets, splits
+    return datasets, all_splits

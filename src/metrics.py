@@ -16,15 +16,42 @@ def dice_loss(logits: torch.Tensor, targets: torch.Tensor, smooth: float = 1.0) 
     return (1.0 - (2.0 * intersection + smooth) / (denominator + smooth)).mean()
 
 
-class BCEDiceLoss(nn.Module):
-    def __init__(self, bce_weight: float = 0.5, dice_weight: float = 0.5) -> None:
+def focal_tversky_loss(
+    logits: torch.Tensor,
+    targets: torch.Tensor,
+    alpha: float = 0.3,
+    beta: float = 0.7,
+    gamma: float = 4.0/3.0,
+    smooth: float = 1.0,
+) -> torch.Tensor:
+    probabilities = torch.sigmoid(logits)
+    dims = tuple(range(1, probabilities.ndim))
+    
+    tp = (probabilities * targets).sum(dim=dims)
+    fp = (probabilities * (1.0 - targets)).sum(dim=dims)
+    fn = ((1.0 - probabilities) * targets).sum(dim=dims)
+    
+    tversky_index = (tp + smooth) / (tp + alpha * fp + beta * fn + smooth)
+    return torch.pow((1.0 - tversky_index), gamma).mean()
+
+
+class HybridLoss(nn.Module):
+    def __init__(self, bce_weight: float = 0.5, dice_weight: float = 0.5, focal_tversky_weight: float = 0.0) -> None:
         super().__init__()
         self.bce = nn.BCEWithLogitsLoss()
         self.bce_weight = bce_weight
         self.dice_weight = dice_weight
+        self.focal_tversky_weight = focal_tversky_weight
 
     def forward(self, logits: torch.Tensor, targets: torch.Tensor) -> torch.Tensor:
-        return self.bce_weight * self.bce(logits, targets) + self.dice_weight * dice_loss(logits, targets)
+        loss = 0.0
+        if self.bce_weight > 0:
+            loss = loss + self.bce_weight * self.bce(logits, targets)
+        if self.dice_weight > 0:
+            loss = loss + self.dice_weight * dice_loss(logits, targets)
+        if self.focal_tversky_weight > 0:
+            loss = loss + self.focal_tversky_weight * focal_tversky_loss(logits, targets)
+        return loss
 
 
 class BinarySegmentationMetrics:

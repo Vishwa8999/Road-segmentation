@@ -60,10 +60,30 @@ class UNet(nn.Module):
         return self.head(x)
 
 
-def build_model(config: dict) -> UNet:
+def build_model(config: dict) -> nn.Module:
     model_cfg = config.get("model", {})
-    return UNet(
-        in_channels=model_cfg.get("in_channels", 3),
-        out_channels=1,
-        base_channels=model_cfg.get("base_channels", 32),
-    )
+    architecture = model_cfg.get("architecture", "unet")
+    in_channels = model_cfg.get("in_channels", 3)
+    
+    if architecture == "smp_unet":
+        import segmentation_models_pytorch as smp
+        
+        encoder_name = model_cfg.get("encoder_name", "resnet34")
+        encoder_weights = model_cfg.get("encoder_weights", "imagenet")
+        
+        # We use 1 output channel since it's binary segmentation, no activation inside the model (handled in loss)
+        model = smp.Unet(
+            encoder_name=encoder_name,
+            encoder_weights=encoder_weights,
+            in_channels=in_channels,
+            classes=1,
+            activation=None
+        )
+        return model
+    else:
+        # Default Vanilla U-Net
+        return UNet(
+            in_channels=in_channels,
+            out_channels=1,
+            base_channels=model_cfg.get("base_channels", 32),
+        )

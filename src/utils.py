@@ -16,13 +16,22 @@ def load_config(config_path: str) -> Dict[str, Any]:
     path = Path(config_path).expanduser().resolve()
     config = yaml.safe_load(path.read_text(encoding="utf-8"))
     project_root = path.parent.parent
-    dataset_path = Path(str(config["dataset"]["path"])).expanduser()
+    raw_paths = config["dataset"]["path"]
+    if isinstance(raw_paths, str):
+        raw_paths = [raw_paths]
+    
+    resolved_paths = []
+    for rp in raw_paths:
+        p = Path(str(rp)).expanduser()
+        if not p.is_absolute():
+            p = (project_root / p).resolve()
+        resolved_paths.append(str(p))
+        
+    config["dataset"]["path"] = resolved_paths if len(resolved_paths) > 1 else resolved_paths[0]
+    
     output_dir = Path(str(config.get("paths", {}).get("output_dir", "outputs"))).expanduser()
-    if not dataset_path.is_absolute():
-        dataset_path = (project_root / dataset_path).resolve()
     if not output_dir.is_absolute():
         output_dir = (project_root / output_dir).resolve()
-    config["dataset"]["path"] = str(dataset_path)
     config.setdefault("paths", {})["output_dir"] = str(output_dir)
     config["_project_root"] = str(project_root)
     return config
